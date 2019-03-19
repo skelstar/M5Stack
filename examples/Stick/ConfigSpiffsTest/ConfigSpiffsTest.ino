@@ -1,178 +1,113 @@
-#include "FS.h"
-#include "SPIFFS.h"
+#include <FS.h>          // this needs to be first, or it all crashes and burns...
+#include <ArduinoJson.h> // https://github.com/bblanchon/ArduinoJson
 
-/* You only need to format SPIFFS the first time you run a
-   test or else use the SPIFFS plugin to create a partition
-   https://github.com/me-no-dev/arduino-esp32fs-plugin */
-#define FORMAT_SPIFFS_IF_FAILED true
+#ifdef ESP32
+  #include <SPIFFS.h>
+#endif
 
-void listDir(fs::FS &fs, const char * dirname, uint8_t levels){
-    Serial.printf("Listing directory: %s\r\n", dirname);
+//define your default values here, if there are different values in config.json, they are overwritten.
+char mqtt_server[40];
+char mqtt_port[6]  = "8080";
+char api_token[32] = "YOUR_API_TOKEN";
 
-    File root = fs.open(dirname);
-    if(!root){
-        Serial.println("- failed to open directory");
-        return;
-    }
-    if(!root.isDirectory()){
-        Serial.println(" - not a directory");
-        return;
-    }
+//default custom static IP
+char static_ip[16] = "10.0.1.56";
+char static_gw[16] = "10.0.1.1";
+char static_sn[16] = "255.255.255.0";
 
-    File file = root.openNextFile();
-    while(file){
-        if(file.isDirectory()){
-            Serial.print("  DIR : ");
-            Serial.println(file.name());
-            if(levels){
-                listDir(fs, file.name(), levels -1);
-            }
+//flag for saving data
+bool shouldSaveConfig = true;
+
+//callback notifying us of the need to save config
+void saveConfigCallback () {
+  Serial.println("Should save config");
+  shouldSaveConfig = true;
+}
+
+void setupSpiffs(){
+  //clean FS, for testing
+  //SPIFFS.format();
+
+  //read configuration from FS json
+  Serial.println("mounting FS...");
+
+  if (SPIFFS.begin()) {
+    Serial.println("mounted file system");
+    if (SPIFFS.exists("/config.json")) {
+      //file exists, reading and loading
+      Serial.println("reading config file");
+      File configFile = SPIFFS.open("/config.json");
+      if (configFile) {
+        Serial.println("opened config file");
+        size_t size = configFile.size();
+        // Allocate a buffer to store contents of the file.
+        std::unique_ptr<char[]> buf(new char[size]);
+
+        configFile.readBytes(buf.get(), size);
+        DynamicJsonBuffer jsonBuffer;
+        JsonObject& json = jsonBuffer.parseObject(buf.get());
+        json.printTo(Serial);
+        if (json.success()) {
+          Serial.println("\nparsed json");
+
+          strcpy(mqtt_server, json["mqtt_server"]);
+          strcpy(mqtt_port, json["mqtt_port"]);
+          strcpy(api_token, json["api_token"]);
+
+          // if(json["ip"]) {
+          //   Serial.println("setting custom ip from config");
+          //   strcpy(static_ip, json["ip"]);
+          //   strcpy(static_gw, json["gateway"]);
+          //   strcpy(static_sn, json["subnet"]);
+          //   Serial.println(static_ip);
+          // } else {
+          //   Serial.println("no custom ip in config");
+          // }
+
         } else {
-            Serial.print("  FILE: ");
-            Serial.print(file.name());
-            Serial.print("\tSIZE: ");
-            Serial.println(file.size());
+          Serial.println("failed to load json config");
         }
-        file = root.openNextFile();
+      }
     }
+  } else {
+    Serial.println("failed to mount FS");
+  }
+  //end read
 }
 
-void readFile(fs::FS &fs, const char * path){
-    Serial.printf("Reading file: %s\r\n", path);
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(9600);
+  Serial.println();
 
-    File file = fs.open(path);
-    if(!file || file.isDirectory()){
-        Serial.println("- failed to open file for reading");
-        return;
+  setupSpiffs();
+
+  //save the custom parameters to FS
+  if (shouldSaveConfig) {
+    Serial.println("saving config");
+    DynamicJsonBuffer jsonBuffer;
+    JsonObject& json = jsonBuffer.createObject();
+    json["mqtt_server"] = mqtt_server;
+    json["mqtt_port"]   = mqtt_port;
+    json["api_token"]   = api_token;
+
+    File configFile = SPIFFS.open("/config.json", FILE_WRITE);
+    if (!configFile) {
+      Serial.println("failed to open config file for writing");
     }
 
-    Serial.println("- read from file:");
-    while(file.available()){
-        Serial.write(file.read());
-    }
+    json.prettyPrintTo(Serial);
+    json.printTo(configFile);
+    configFile.close();
+    //end save
+    shouldSaveConfig = false;
+  }
+
+  Serial.println("local ip");
 }
 
-void writeFile(fs::FS &fs, const char * path, const char * message){
-    Serial.printf("Writing file: %s\r\n", path);
+void loop() {
+  // put your main code here, to run repeatedly:
 
-    File file = fs.open(path, FILE_WRITE);
-    if(!file){
-        Serial.println("- failed to open file for writing");
-        return;
-    }
-    if(file.print(message)){
-        Serial.println("- file written");
-    } else {
-        Serial.println("- frite failed");
-    }
-}
-
-void appendFile(fs::FS &fs, const char * path, const char * message){
-    Serial.printf("Appending to file: %s\r\n", path);
-
-    File file = fs.open(path, FILE_APPEND);
-    if(!file){
-        Serial.println("- failed to open file for appending");
-        return;
-    }
-    if(file.print(message)){
-        Serial.println("- message appended");
-    } else {
-        Serial.println("- append failed");
-    }
-}
-
-void renameFile(fs::FS &fs, const char * path1, const char * path2){
-    Serial.printf("Renaming file %s to %s\r\n", path1, path2);
-    if (fs.rename(path1, path2)) {
-        Serial.println("- file renamed");
-    } else {
-        Serial.println("- rename failed");
-    }
-}
-
-void deleteFile(fs::FS &fs, const char * path){
-    Serial.printf("Deleting file: %s\r\n", path);
-    if(fs.remove(path)){
-        Serial.println("- file deleted");
-    } else {
-        Serial.println("- delete failed");
-    }
-}
-
-void testFileIO(fs::FS &fs, const char * path){
-    Serial.printf("Testing file I/O with %s\r\n", path);
-
-    static uint8_t buf[512];
-    size_t len = 0;
-    File file = fs.open(path, FILE_WRITE);
-    if(!file){
-        Serial.println("- failed to open file for writing");
-        return;
-    }
-
-    size_t i;
-    Serial.print("- writing" );
-    uint32_t start = millis();
-    for(i=0; i<2048; i++){
-        if ((i & 0x001F) == 0x001F){
-          Serial.print(".");
-        }
-        file.write(buf, 512);
-    }
-    Serial.println("");
-    uint32_t end = millis() - start;
-    Serial.printf(" - %u bytes written in %u ms\r\n", 2048 * 512, end);
-    file.close();
-
-    file = fs.open(path);
-    start = millis();
-    end = start;
-    i = 0;
-    if(file && !file.isDirectory()){
-        len = file.size();
-        size_t flen = len;
-        start = millis();
-        Serial.print("- reading" );
-        while(len){
-            size_t toRead = len;
-            if(toRead > 512){
-                toRead = 512;
-            }
-            file.read(buf, toRead);
-            if ((i++ & 0x001F) == 0x001F){
-              Serial.print(".");
-            }
-            len -= toRead;
-        }
-        Serial.println("");
-        end = millis() - start;
-        Serial.printf("- %u bytes read in %u ms\r\n", flen, end);
-        file.close();
-    } else {
-        Serial.println("- failed to open file for reading");
-    }
-}
-
-void setup(){
-    Serial.begin(9600);
-    if(!SPIFFS.begin(FORMAT_SPIFFS_IF_FAILED)){
-        Serial.println("SPIFFS Mount Failed");
-        return;
-    }
-    
-    listDir(SPIFFS, "/", 0);
-    writeFile(SPIFFS, "/hello.txt", "Hello ");
-    appendFile(SPIFFS, "/hello.txt", "World!\r\n");
-    readFile(SPIFFS, "/hello.txt");
-    renameFile(SPIFFS, "/hello.txt", "/foo.txt");
-    readFile(SPIFFS, "/foo.txt");
-    deleteFile(SPIFFS, "/foo.txt");
-    testFileIO(SPIFFS, "/test.txt");
-    deleteFile(SPIFFS, "/test.txt");
-    Serial.println( "Test complete" );
-}
-
-void loop(){
 
 }
